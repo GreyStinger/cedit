@@ -1,12 +1,17 @@
+/*** GNU_SOURCE ***/
+#define _GNU_SOURCE
+
+
 /*** Includes ***/
 #include <ctype.h>
 #include <errno.h>
-#include <termios.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <sys/ioctl.h>
-#include <unistd.h>
 #include <string.h>
+#include <sys/ioctl.h>
+#include <sys/types.h>
+#include <termios.h>
+#include <unistd.h>
 
 /*** Definitions ***/
 #define clrscr() write(STDOUT_FILENO, "\033[2J\033[1;1H", 10)
@@ -27,11 +32,19 @@ enum editorKey
 };
 
 /*** Data ***/
+typedef struct erow
+{
+	int size;
+	char *chars;
+} erow;
+
 struct editorConfig
 {
 	int cx, cy;
 	int screen_rows;
 	int screen_cols;
+	int numrows;
+	erow row;
 	struct termios orig_termios;
 };
 
@@ -206,6 +219,33 @@ int getWindowSize(int *rows, int *cols)
 	}
 }
 
+/*** File I/O ***/
+
+void editorOpen(char *filename)
+{
+	FILE *fp = fopen(filename, "r");
+	if (!fp) die("fopen");
+
+	
+	char *line = NULL;
+	size_t line_cap = 0;
+	ssize_t line_len;
+
+	line_len = getline(&line, &line_cap, fp);
+	if (line_len != -1)
+	{
+		while (line_len > 0 && (line[line_len - 1] == '\n' || line[line_len] == '\r')) --line_len;
+
+		E.row.size = line_len;
+		E.row.chars = malloc(line_len + 1);
+		memcpy(E.row.chars, line, line_len);
+		E.row.chars[line_len] = '\0';
+		E.numrows = 1;
+	}
+	free(line);
+	fclose(fp);
+}
+
 /*** Append Buffer ***/
 struct abuf
 {
@@ -303,29 +343,40 @@ void editorDrawRows(struct abuf *ab)
 {
 	for (int y = 0; y < E.screen_rows; ++y)
 	{
-		if (y == E.screen_rows / 3)
+		if (y >= E.numrows)
 		{
-			char welcome[64];
-			int welcome_len = snprintf(welcome, sizeof(welcome),
-									   "CEdit editor -- version %s", CEDIT_VERSION);
-			if (welcome_len > E.screen_cols)
-				welcome_len = E.screen_cols;
+			if (y == E.screen_rows / 3)
+			{
 
-			int padding = (E.screen_cols - welcome_len) / 2;
+				char welcome[64];
+				int welcome_len = snprintf(welcome, sizeof(welcome),
+										"CEdit editor -- version %s", CEDIT_VERSION);
+				if (welcome_len > E.screen_cols)
+					welcome_len = E.screen_cols;
 
-			if (padding)
+				int padding = (E.screen_cols - welcome_len) / 2;
+
+				if (padding)
+				{
+					abAppend(ab, "~", 1);
+					--padding;
+				}
+
+				while (--padding)
+					abAppend(ab, " ", 1);
+				abAppend(ab, welcome, welcome_len);
+			}
+			else
 			{
 				abAppend(ab, "~", 1);
-				--padding;
 			}
-
-			while (--padding)
-				abAppend(ab, " ", 1);
-			abAppend(ab, welcome, welcome_len);
 		}
 		else
 		{
-			abAppend(ab, "~", 1);
+			int len = E.row.size;
+			if (len > E.screen_cols)
+				len = E.screen_cols;
+			abAppend(ab, E.row.chars, len);
 		}
 
 		abAppend(ab, "\033[K", 3);
@@ -361,15 +412,20 @@ void initEditor()
 {
 	E.cx = 0;
 	E.cy = 0;
+	E.numrows = 0;
 
 	if (getWindowSize(&E.screen_rows, &E.screen_cols) == -1)
 		die("getWindowSize");
 }
 
-int main()
-{
+int main(int argc, char *argv[])
+{	
 	enableRawMode();
 	initEditor();
+	if (argc >= 2 )
+	{
+		editorOpen(argv[1]);
+	}
 
 	while (1)
 	{
